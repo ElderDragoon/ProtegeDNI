@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<title>Protección DNI</title>
+<!-- todo el estilo está contenido dentro del HTML pata usar un fichero único-->
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    background: #f7f7f7;
+  }
+  #preview-container {
+    margin-top: 20px;
+    position: relative;
+  }
+  canvas {
+    max-width: 100%;
+    border: 1px solid #ccc;
+    margin-top: 20px;
+    display: block;
+    cursor: crosshair;
+  }
+  .label {
+    display:block;
+    margin:10px 0 5px;
+    font-weight:bold;
+  }
+  #download-btn {
+    margin-top: 20px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Protección de DNI</h1>
+<p>Sube tu DNI (imagen o PDF), especifica el motivo, obtendrás la imagen con marcas de agua y patrón anti-fraude, y luego podrás "pintar" encima áreas sensibles manteniendo pulsado el ratón.</p>
+
+<label class="label" for="file-input">Subir DNI (PNG, JPG, JPEG o PDF):</label>
+<input type="file" id="file-input" accept=".png,.jpg,.jpeg,.pdf">
+
+<label class="label" for="reason-input">Motivo para la copia (ej: "Copia para registro en Hotel"):</label>
+<input type="text" id="reason-input" placeholder="Motivo..." style="width:100%;max-width:400px;">
+
+<button id="process-btn">Procesar</button>
+
+<div id="preview-container"></div>
+
+<button id="download-btn" style="display:none;">Descargar imagen procesada</button>
+
+<!-- pdf.js solo si se desea soporte para PDF, si no, se puede eliminar esta línea-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.6.347/pdf.min.js"></script>
+<script>
+  const fileInput = document.getElementById('file-input');
+  const reasonInput = document.getElementById('reason-input');
+  const processBtn = document.getElementById('process-btn');
+  const downloadBtn = document.getElementById('download-btn');
+
+  let objectURL = null;
+  let finalCanvas = null;
+  let finalCtx = null;
+  let isDrawing = false; 
+  let lastX, lastY; // para trazar líneas suaves si se desea
+
+  processBtn.addEventListener('click', async () => {
+    const file = fileInput.files[0];
+    if(!file) {
+      alert('Por favor, selecciona un archivo.');
+      return;
+    }
+    if(!reasonInput.value.trim()) {
+      alert('Por favor, especifica un motivo.');
+      return;
+    }
+
+    const fileType = file.type;
+    if (fileType === 'application/pdf') {
+      await processPDF(file);
+    } else if (
+       fileType === 'image/png' || 
+       fileType === 'image/jpg' || 
+       fileType === 'image/jpeg' ||
+       file.name.toLowerCase().endsWith('.jpg') ||
+       file.name.toLowerCase().endsWith('.jpeg')
+    ) {
+      await processImage(file);
+    } else {
+      alert('Formato no soportado. Utiliza PNG, JPG, JPEG o PDF.');
+      return;
+    }
+
+    if (objectURL) {
+      URL.revokeObjectURL(objectURL);
+      objectURL = null;
+    }
+  });
+
+  async function processImage(file) {
+    const reason = reasonInput.value.trim();
+    const img = new Image();
+    img.onload = () => {
+      createCanvasWithEffects(img, reason);
+    };
+    img.onerror = () => {
+      alert('No se pudo cargar la imagen.');
+    };
+    objectURL = URL.createObjectURL(file);
+    img.src = objectURL;
+  }
+
+  async function processPDF(file) {
+    const reason = reasonInput.value.trim();
+    const fileReader = new FileReader();
+    fileReader.onload = async function() {
+      const typedarray = new Uint8Array(this.result);
+
+      const loadingTask = pdfjsLib.getDocument({data: typedarray});
+      const pdf = await loadingTask.promise;
+      const page = await pdf.getPage(1); 
+      const viewport = page.getViewport({scale:1.5});
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({canvasContext: ctx, viewport: viewport}).promise;
+
+      const img = new Image();
+      img.onload = () => {
+        createCanvasWithEffects(img, reason);
+      }
+      img.src = canvas.toDataURL('image/png');
+    };
+    fileReader.readAsArrayBuffer(file);
+  }
+
+  function createCanvasWithEffects(img, reason) {
+    finalCanvas = document.createElement('canvas');
+    finalCtx = finalCanvas.getContext('2d');
+    finalCanvas.id = 'finalCanvas';
+
+    finalCanvas.width = img.width;
+    finalCanvas.height = img.height;
+
+    // Dibujamos la imagen original
+    finalCtx.drawImage(img, 0, 0);
+
+    // Convertimos a escala de grises
+    let imageData = finalCtx.getImageData(0,0,finalCanvas.width,finalCanvas.height);
+    let data = imageData.data;
+    for(let i=0; i<data.length; i+=4) {
+      const r = data[i];
+      const g = data[i+1];
+      const b = data[i+2];
+      const gray = (r+g+b)/3;
+      data[i] = data[i+1] = data[i+2] = gray;
+    }
+    finalCtx.putImageData(imageData, 0,0);
+
+    // Añadimos patrón semitransparente (rejilla)
+    const patternCanvas = document.createElement('canvas');
+    patternCanvas.width = 20;
+    patternCanvas.height = 20;
+    const pctx = patternCanvas.getContext('2d');
+    pctx.strokeStyle = 'rgba(0,0,0,0.2)';
+    pctx.lineWidth = 1.5;
+    pctx.beginPath();
+    pctx.moveTo(0.5,0);
+    pctx.lineTo(0.5,20);
+    pctx.stroke();
+    pctx.beginPath();
+    pctx.moveTo(0,0.5);
+    pctx.lineTo(20,0.5);
+    pctx.stroke();
+    const pattern = finalCtx.createPattern(patternCanvas,'repeat');
+    finalCtx.save();
+    finalCtx.fillStyle = pattern;
+    finalCtx.fillRect(0,0,finalCanvas.width,finalCanvas.height);
+    finalCtx.restore();
+
+    // Añadimos la marca de agua diagonal "NO COMPARTIR"
+    const diagonalText = "NO COMPARTIR";
+    const diagonal = Math.sqrt(finalCanvas.width*finalCanvas.width + finalCanvas.height*finalCanvas.height);
+    finalCtx.textAlign = 'center';
+    finalCtx.fillStyle = 'rgba(0,0,0,0.2)';
+    let fontSize = 150; 
+    do {
+      finalCtx.font = 'bold ' + fontSize + 'px Arial';
+      const measure = finalCtx.measureText(diagonalText);
+      if (measure.width > diagonal * 0.7) {
+        fontSize -= 5;
+      } else {
+        break;
+      }
+    } while (fontSize > 10);
+
+    finalCtx.save();
+    finalCtx.translate(finalCanvas.width/2, finalCanvas.height/2);
+    finalCtx.rotate(-Math.PI/4); // -45 grados
+    finalCtx.fillText(diagonalText, 0, 0);
+    finalCtx.restore();
+
+    // Ajustamos el tamaño del texto del motivo
+    const maxTextWidth = finalCanvas.width * 0.8; 
+    fontSize = 50;
+    finalCtx.textAlign = 'center';
+    finalCtx.fillStyle = 'rgba(0,0,0,0.3)';
+    let metrics;
+    do {
+      finalCtx.font = 'bold '+fontSize+'px Arial';
+      metrics = finalCtx.measureText(reason);
+      if (metrics.width > maxTextWidth) {
+        fontSize -= 1;
+      } else {
+        break;
+      }
+    } while (fontSize > 10);
+	
+	// Ajustamos la ubicación de las tres marcas de agua con el motivo
+    finalCtx.fillText(reason, finalCanvas.width/2, 90);
+    finalCtx.fillText(reason, finalCanvas.width/2, finalCanvas.height/2);
+    finalCtx.fillText(reason, finalCanvas.width/2, finalCanvas.height - 90);
+
+    // Eventos para pintar encima (opacar)
+    finalCanvas.addEventListener('mousedown', startDraw);
+    finalCanvas.addEventListener('mouseup', endDraw);
+    finalCanvas.addEventListener('mouseleave', endDraw);
+    finalCanvas.addEventListener('mousemove', draw);
+
+    const previewContainer = document.getElementById('preview-container');
+    previewContainer.innerHTML = '';
+    previewContainer.appendChild(finalCanvas);
+
+    downloadBtn.style.display = 'inline-block';
+  }
+
+  function startDraw(e) {
+    isDrawing = true;
+    [lastX, lastY] = getMousePos(e);
+  }
+
+  function endDraw() {
+    isDrawing = false;
+  }
+
+  function draw(e) {
+    if (!isDrawing) return;
+    let [x, y] = getMousePos(e);
+    // Pintamos un trazo grueso de color negro semitransparente
+    finalCtx.strokeStyle = 'rgba(0,0,0,0.8)'; 
+    finalCtx.lineWidth = 50; // grosor del "rotulador"
+    finalCtx.lineJoin = 'round';
+    finalCtx.lineCap = 'round';
+
+    finalCtx.beginPath();
+    finalCtx.moveTo(lastX, lastY);
+    finalCtx.lineTo(x, y);
+    finalCtx.stroke();
+
+    [lastX, lastY] = [x, y];
+  }
+
+  function getMousePos(e){
+    const rect = finalCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return [x, y];
+  }
+
+  downloadBtn.addEventListener('click', ()=> {
+    const link = document.createElement('a');
+    link.download = 'dni_protegido.png';
+    link.href = finalCanvas.toDataURL('image/png');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+	
+	// Una vez descragado, refrescamos la página en 1 segundo
+    setTimeout(() => {
+      location.reload();
+    }, 1000);
+  });
+</script>
+
+</body>
+</html>
